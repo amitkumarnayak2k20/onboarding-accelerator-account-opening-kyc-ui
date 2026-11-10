@@ -6,18 +6,35 @@ from ..observability.cost import estimate_cost_usd
 from ..observability.tracing import span
 
 def _mock_extract(text: str) -> dict:
-    # Deterministic parser for labelled synthetic training text.
+    """Deterministic labelled-field extractor for synthetic KYC samples.
+
+    Supports common identity and utility-document label variants. It deliberately
+    does not infer fields from unlabelled prose.
+    """
     patterns = {
-        "full_name": r"(?im)^\s*(?:name|full name)\s*:\s*(.+?)\s*$",
-        "date_of_birth": r"(?im)^\s*(?:date of birth|dob)\s*:\s*(.+?)\s*$",
-        "document_number": r"(?im)^\s*(?:document number|passport number|id number)\s*:\s*(.+?)\s*$",
-        "expiry_date": r"(?im)^\s*(?:expiry date|expiration date)\s*:\s*(.+?)\s*$",
-        "address": r"(?im)^\s*address\s*:\s*(.+?)\s*$",
+        "full_name": [
+            r"(?im)^\s*(?:full\s+name|name|account\s+holder|customer\s+name|tenant)\s*:\s*(.+?)\s*$",
+        ],
+        "date_of_birth": [r"(?im)^\s*(?:date\s+of\s+birth|dob)\s*:\s*(.+?)\s*$"],
+        "document_number": [r"(?im)^\s*(?:document\s+number|passport\s+number|licen[cs]e\s+number|id\s+number)\s*:\s*(.+?)\s*$"],
+        "expiry_date": [r"(?im)^\s*(?:expiry\s+date|date\s+of\s+expiry|expiration\s+date)\s*:\s*(.+?)\s*$"],
+        "address": [r"(?im)^\s*(?:address|service\s+address|customer\s+address|property\s+address)\s*:\s*(.+?)\s*$"],
     }
     result = {}
-    for field, pattern in patterns.items():
-        match = re.search(pattern, text)
-        result[field] = match.group(1).strip() if match else None
+    for field, candidates in patterns.items():
+        value = None
+        for pattern in candidates:
+            match = re.search(pattern, text)
+            if match:
+                value = match.group(1).strip()
+                break
+        result[field] = value
+    # Passport samples sometimes provide surname and given name separately.
+    if not result["full_name"]:
+        surname = re.search(r"(?im)^\s*surname\s*:\s*(.+?)\s*$", text)
+        given = re.search(r"(?im)^\s*given\s+name\s*:\s*(.+?)\s*$", text)
+        if surname or given:
+            result["full_name"] = " ".join(x.group(1).strip() for x in (given, surname) if x)
     result["document_type"] = None
     return result
 

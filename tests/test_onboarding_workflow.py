@@ -36,6 +36,7 @@ def test_inventory_process_and_duplicate_request_guard(tmp_path, monkeypatch):
     assert processed.status_code == 200
     assert processed.json()["documents_checked"][0]["status"] == "VERIFIED"
     assert processed.json()["human_review_required"] is True
+    assert processed.json()["address_verification"]["status"] == "inconclusive"
 
     request = client.post("/applications/workflow-001/document-requests", json={
         "document_type": "passport", "reason": "Passport copy requested"
@@ -76,3 +77,50 @@ def test_identity_document_required(tmp_path, monkeypatch):
     response = client.post("/applications/no-id-001/process", json={})
     assert response.status_code == 400
     assert "identity document is required" in response.json()["detail"]
+
+
+def test_automated_three_tool_verification_and_name_mismatch(tmp_path, monkeypatch):
+    monkeypatch.setattr(audit_store, "settings", replace(settings, database_path=str(tmp_path / "matching.sqlite")))
+    client = TestClient(api.app)
+    address = "Flat 402, Lakeview Residency, Road No. 12, Jubilee Hills, Hyderabad, Telangana 500033"
+    client.post("/applications", json={
+        "applicant_id": "match-001", "full_name": "Rohan Mehta",
+        "date_of_birth": "1992-04-18", "application_address": address
+    })
+    client.post("/applications/match-001/documents", json={
+        "document_type": "driving_licence",
+        "document_text": "Name: Rohan Mehta\nDate of birth: 18 April 1992\nLicence number: MOCK-123\nExpiry date: 11 January 2044\nAddress: " + address
+    })
+    client.post("/applications/match-001/documents", json={
+        "document_type": "proof_of_address",
+        "document_text": "Customer name: Rohan Mehta\nService address: " + address
+    })
+    result = client.post("/applications/match-001/process", json={}).json()
+    assert result["workflow_status"] == "PRELIMINARY_KYC_PASSED"
+    assert result["human_review_required"] is False
+    assert result["identity_verification"]["full_name"]["match"] is True
+    assert result["identity_verification"]["date_of_birth"]["match"] is True
+    assert result["address_verification"]["match"] is True
+    assert result["tools_executed"] == ["extract_document_fields", "verify_address", "assign_risk_rating"]
+    audit_types = [e["event_type"] for e in client.get("/applications/match-001/audit").json()["events"]]
+    assert audit_types.count("TOOL_EXECUTION_COMPLETED") >= 4
+
+    changed = client.patch("/applications/match-001", json={"full_name": "Ajay Kumar Nayak"})
+    assert changed.status_code == 200
+    assert changed.json()["status"] == "UPDATED_AND_REVERIFIED"
+    verification = changed.json()["verification"]
+    assert verification["workflow_status"] == "MANUAL_REVIEW"
+    assert any(x["code"] == "NAME_MISMATCH" for x in verification["verification_issues"])
+
+
+def test_mock_extractor_supports_driving_licence_labels():
+    from kyc_agent.llm.provider import _mock_extract
+    fields = _mock_extract(
+        "Name: Rohan Mehta\nDate of birth: 18 April 1992\n"
+        "Licence number: MOCK-123\nExpiry date: 11 January 2044\n"
+        "Address: 1 Sample Road, Hyderabad"
+    )
+    assert fields["full_name"] == "Rohan Mehta"
+    assert fields["date_of_birth"] == "18 April 1992"
+    assert fields["document_number"] == "MOCK-123"
+    assert fields["expiry_date"] == "11 January 2044"

@@ -26,13 +26,14 @@ def connect():
     conn=sqlite3.connect(settings.database_path); conn.row_factory=sqlite3.Row; conn.executescript(SCHEMA)
     cols={r["name"] for r in conn.execute("PRAGMA table_info(applications)").fetchall()}
     if "application_address" not in cols: conn.execute("ALTER TABLE applications ADD COLUMN application_address TEXT")
+    if "date_of_birth" not in cols: conn.execute("ALTER TABLE applications ADD COLUMN date_of_birth TEXT")
     if "application_status" not in cols: conn.execute("ALTER TABLE applications ADD COLUMN application_status TEXT DEFAULT 'IN_PROGRESS'")
     return conn
 
-def create_application(applicant_id, full_name, email_redacted, application_address=None):
+def create_application(applicant_id, full_name, email_redacted, application_address=None, date_of_birth=None):
     with connect() as c:
-        c.execute("INSERT INTO applications(applicant_id,full_name,email_redacted,created_at,application_address,application_status) VALUES(?,?,?,?,?,?)",
-                  (applicant_id,full_name,email_redacted,time.time(),application_address,"IN_PROGRESS"))
+        c.execute("INSERT INTO applications(applicant_id,full_name,email_redacted,created_at,application_address,application_status,date_of_birth) VALUES(?,?,?,?,?,?,?)",
+                  (applicant_id,full_name,email_redacted,time.time(),application_address,"IN_PROGRESS",date_of_birth))
 
 def get_application(applicant_id):
     with connect() as c:
@@ -48,7 +49,9 @@ def save_result(applicant_id,result):
 
 def add_document(applicant_id,document_type,document_text,vendor_version="ocr-v1",source_filename=None):
     now=time.time(); did=str(uuid.uuid4())
-    with connect() as c:c.execute("INSERT INTO applicant_documents VALUES(?,?,?,?,?,?,?,?,?)",
+    with connect() as c:
+        c.execute("UPDATE applications SET latest_result=NULL,application_status='IN_PROGRESS' WHERE applicant_id=?",(applicant_id,))
+        c.execute("INSERT INTO applicant_documents VALUES(?,?,?,?,?,?,?,?,?)",
         (did,applicant_id,document_type,document_text,source_filename,vendor_version,"RECEIVED",now,now))
     return {"document_id":did,"document_type":document_type,"status":"RECEIVED","received_at":now,"vendor_version":vendor_version}
 
@@ -78,7 +81,7 @@ def get_events(applicant_id):
 def get_slo_counts():
     with connect() as c:
         decisions=c.execute("SELECT COUNT(DISTINCT applicant_id) n FROM audit_events WHERE event_type='APPLICATION_DECISION_RECORDED'").fetchone()["n"]
-        bad=c.execute("SELECT COUNT(DISTINCT applicant_id) n FROM audit_events WHERE event_type='DUPLICATE_DOCUMENT_REQUEST_SENT'").fetchone()["n"]
+        bad=c.execute("SELECT COUNT(DISTINCT applicant_id) n FROM audit_events WHERE event_type='DOCUMENT_RESUBMISSION_REQUESTED' AND json_extract(event_json, '$.previously_supplied')=1").fetchone()["n"]
     good=max(0,decisions-bad)
     return {"applications_with_decision":decisions,"decisions_without_duplicate_document_request":good,
             "applications_with_duplicate_document_request":bad,"slo_attainment":good/decisions if decisions else None}
@@ -98,12 +101,16 @@ def list_applications(status: str | None = None, limit: int = 100):
             out.append(item)
         return out
 
-def update_application(applicant_id: str, full_name: str | None = None, application_address: str | None = None):
+def update_application(applicant_id: str, full_name: str | None = None, application_address: str | None = None, date_of_birth: str | None = None):
     with connect() as c:
+        # Any applicant-data change invalidates the previous assessment until re-verification.
+        c.execute("UPDATE applications SET latest_result=NULL,application_status='IN_PROGRESS' WHERE applicant_id=?",(applicant_id,))
         if full_name is not None:
             c.execute("UPDATE applications SET full_name=? WHERE applicant_id=?",(full_name,applicant_id))
         if application_address is not None:
             c.execute("UPDATE applications SET application_address=? WHERE applicant_id=?",(application_address,applicant_id))
+        if date_of_birth is not None:
+            c.execute("UPDATE applications SET date_of_birth=? WHERE applicant_id=?",(date_of_birth,applicant_id))
         return c.execute("SELECT changes() AS n").fetchone()["n"] > 0
 
 

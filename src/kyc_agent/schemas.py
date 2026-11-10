@@ -7,6 +7,7 @@ class ApplicationCreate(BaseModel):
     applicant_id: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     full_name: str = Field(min_length=2, max_length=120)
     email: Optional[str] = Field(default=None, max_length=254)
+    date_of_birth: Optional[str] = Field(default=None, max_length=32)
     application_address: Optional[str] = Field(default=None, max_length=1000)
 
 class DocumentSubmission(BaseModel):

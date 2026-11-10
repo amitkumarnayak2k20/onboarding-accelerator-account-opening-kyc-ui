@@ -44,22 +44,33 @@ def applications_endpoint(status: str|None=None, limit: int=100):
 
 @app.post("/applications",status_code=201)
 def create_application_endpoint(payload:ApplicationCreate):
-    try: create_application(payload.applicant_id,payload.full_name,redact_text(payload.email or "")[0],payload.application_address)
+    try: create_application(payload.applicant_id,payload.full_name,redact_text(payload.email or "")[0],payload.application_address,payload.date_of_birth)
     except Exception as exc:
         if "UNIQUE constraint failed" in str(exc): raise HTTPException(409,"Applicant ID already exists")
         raise
-    add_event(payload.applicant_id,"APPLICATION_CREATED",{"application_address_supplied":bool(payload.application_address)})
+    add_event(payload.applicant_id,"APPLICATION_CREATED",{"application_address_supplied":bool(payload.application_address),"date_of_birth_supplied":bool(payload.date_of_birth)})
     return {"applicant_id":payload.applicant_id,"status":"CREATED"}
 
 @app.patch("/applications/{applicant_id}")
 def patch_application_endpoint(applicant_id:str,payload:dict):
     if not get_application(applicant_id): raise HTTPException(404,"Application not found")
-    name=payload.get("full_name"); address=payload.get("application_address")
+    name=payload.get("full_name"); address=payload.get("application_address"); dob=payload.get("date_of_birth")
     if name is not None and (not isinstance(name,str) or not 2<=len(name.strip())<=120): raise HTTPException(400,"Invalid full_name")
     if address is not None and (not isinstance(address,str) or not address.strip()): raise HTTPException(400,"Invalid application_address")
-    update_application(applicant_id,full_name=name.strip() if name else None,application_address=address.strip() if address else None)
-    add_event(applicant_id,"APPLICATION_UPDATED",{"full_name_changed":name is not None,"address_changed":address is not None})
-    return {"applicant_id":applicant_id,"status":"UPDATED"}
+    if dob is not None and (not isinstance(dob,str) or not dob.strip()): raise HTTPException(400,"Invalid date_of_birth")
+    update_application(applicant_id,full_name=name.strip() if name else None,
+        application_address=address.strip() if address else None,date_of_birth=dob.strip() if dob else None)
+    add_event(applicant_id,"APPLICATION_UPDATED",{"full_name_changed":name is not None,"address_changed":address is not None,"date_of_birth_changed":dob is not None})
+    # Any material applicant-detail change invalidates the previous assessment.
+    docs=[d for d in get_documents(applicant_id) if d["status"]!="SUPERSEDED"]
+    if docs:
+        try:
+            verification=process_application(applicant_id,ProcessRequest())
+            add_event(applicant_id,"APPLICATION_REVERIFIED_AFTER_UPDATE",{"workflow_status":verification["workflow_status"],"verification_issues":verification.get("verification_issues",[])})
+            return {"applicant_id":applicant_id,"status":"UPDATED_AND_REVERIFIED","verification":verification}
+        except ValueError as exc:
+            raise HTTPException(400,str(exc))
+    return {"applicant_id":applicant_id,"status":"UPDATED","verification":None}
 
 @app.get("/applications/{applicant_id}")
 def get_application_endpoint(applicant_id:str):

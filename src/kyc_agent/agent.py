@@ -63,7 +63,7 @@ def chat(message: str):
             return {"reply":f"Application {applicant_id} exists, but no documents have been submitted. Upload the required identity and address documents before running KYC verification.","action":"upload_document","application_id":applicant_id}
         try:
             result=process_application(applicant_id,ProcessRequest())
-            return {"reply":f"KYC checks completed for {applicant_id}. Preliminary workflow status: {result['workflow_status']}. Preliminary risk: {result['preliminary_assessment']['preliminary_risk_band']}. Human review is still required; this is not an account approval.","action":"show_application","application_id":applicant_id,"result":result}
+            return {"reply":f"KYC checks completed for {applicant_id}. Preliminary workflow status: {result['workflow_status']}. Preliminary risk: {result['preliminary_assessment']['preliminary_risk_band']}. Verification issues: {', '.join(x['code'] for x in result.get('verification_issues', [])) or 'None'}. Human review required for this case: {result['human_review_required']}. This is not final account approval.","action":"show_application","application_id":applicant_id,"result":result}
         except Exception as exc:
             return {"reply":f"I couldn't complete KYC processing for {applicant_id}: {type(exc).__name__}. Please inspect the application and audit events.","action":"show_application","application_id":applicant_id}
 
@@ -89,7 +89,11 @@ def chat(message: str):
             return {"reply":f"Application {applicant_id} was not found.","action":"none"}
         update_application(applicant_id,full_name=new_name)
         add_event(applicant_id,"APPLICATION_NAME_UPDATED",{"new_full_name":new_name,"source":"copilot_chat"})
-        return {"reply":f"Updated the applicant name for {applicant_id} to {new_name}. The change has been recorded in the audit trail. Re-run KYC checks if the name is part of a document comparison.","action":"show_application","application_id":applicant_id}
+        docs=[d for d in get_documents(applicant_id) if d["status"]!="SUPERSEDED"]
+        if docs:
+            result=process_application(applicant_id,ProcessRequest())
+            return {"reply":f"Updated the applicant name for {applicant_id} and automatically re-ran KYC. Result: {result['workflow_status']}. Issues: {', '.join(x['code'] for x in result.get('verification_issues', [])) or 'None'}.","action":"show_application","application_id":applicant_id,"result":result}
+        return {"reply":f"Updated the applicant name for {applicant_id}. No active documents are available yet, so KYC will run automatically after document submission.","action":"show_application","application_id":applicant_id}
 
     if applicant_id and (any(k in low for k in ["change document","replace document","update document","upload new document","document change","replace passport","change passport","update passport","replace driving licence","replace national id","replace proof of address"]) or re.search(r"(?:replace|change|update)\s+(?:the\s+)?(?:passport|driving\s+licence|national\s+id|proof\s+of\s+address)", low)):
         if not get_application(applicant_id):
@@ -104,7 +108,11 @@ def chat(message: str):
         if not get_application(applicant_id):return {"reply":f"Application {applicant_id} was not found.","action":"none"}
         update_application(applicant_id,application_address=address)
         add_event(applicant_id,"APPLICATION_ADDRESS_UPDATED",{"new_address":address,"source":"copilot_chat"})
-        return {"reply":f"Updated the application address for {applicant_id}. The change is recorded. Please re-run address verification.","action":"show_application","application_id":applicant_id}
+        docs=[d for d in get_documents(applicant_id) if d["status"]!="SUPERSEDED"]
+        if docs:
+            result=process_application(applicant_id,ProcessRequest())
+            return {"reply":f"Updated the address for {applicant_id} and automatically re-ran KYC. Result: {result['workflow_status']}. Issues: {', '.join(x['code'] for x in result.get('verification_issues', [])) or 'None'}.","action":"show_application","application_id":applicant_id,"result":result}
+        return {"reply":f"Updated the application address for {applicant_id}. No active documents are available yet; KYC will run automatically after document submission.","action":"show_application","application_id":applicant_id}
 
     # Policy questions are answered only when retrieval has relevant indexed guidance.
     policy_terms=["kyc","document","passport","proof of address","address verification","identity","expiry","expired","verification","risk","onboarding","account opening","guideline","guidelines","requirements","escalation"]

@@ -13,6 +13,7 @@ flowchart TB
   end
   subgraph Core[Agent capabilities]
     EXT[extract_document_fields]
+    MATCH[Applicant identity field matching: name + DOB]
     ADDR[verify_address]
     RISK[assign_risk_rating]
     RET[Policy retrieval / RAG]
@@ -42,8 +43,8 @@ flowchart TB
   CHAT --> ORCH
   APP --> SQL
   APP --> ORCH
-  ORCH --> EXT
-  ORCH --> ADDR
+  ORCH --> EXT --> MATCH
+  MATCH --> ADDR
   ORCH --> RISK
   ORCH --> RET
   ORCH --> SQL
@@ -56,8 +57,8 @@ flowchart TB
 
 ## Main runtime paths
 - **Scenario 1 — pending queue:** chat asks the SQLite application store for applications with no assessment or with a review/needs-information status, then returns application IDs.
-- **Scenario 2 — modification:** the user identifies an existing application ID; name/address changes are persisted with audit events. Replacement uploads supersede the previous active document of that type and preserve history.
-- **Scenario 3 — fresh application:** the chat opens the intake form; the UI creates an application ID, uploads documents, registers them in SQLite and calls the orchestrator.
+- **Scenario 2 — modification:** the user identifies an existing application ID; name/address/DOB changes are persisted with audit events and automatically trigger re-verification against active documents. Replacement uploads supersede the previous active document of that type, invalidate the prior assessment and are reprocessed by the UI.
+- **Scenario 3 — fresh application:** the chat opens the intake form; the UI creates an application ID, captures name/DOB/address, uploads identity and address evidence, registers them in SQLite and calls the orchestrator. The form resets after successful processing.
 - **Guideline RAG:** an authorised user uploads policy files; loaders, PII pattern redaction, chunking, embeddings and ChromaDB indexing create a searchable policy collection. The chat only answers policy questions when retrieval passes the scope gate.
 
 ## Trust boundaries

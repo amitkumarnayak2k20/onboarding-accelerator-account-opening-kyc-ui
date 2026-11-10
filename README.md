@@ -2,7 +2,7 @@
 
 Runnable training capstone reference implementation. It consolidates the applicant journey, maintains a document inventory, runs the three required tools (`extract_document_fields`, `verify_address`, `assign_risk_rating`), retrieves policy guidance through RAG, records auditable events and exposes observability for the business SLO.
 
-> **Synthetic training data only.** This is not a production bank onboarding, AML, identity-authenticity or account-approval system. Human review is mandatory. Never use real customer KYC documents in this demo.
+> **Synthetic training data only.** This is not a production bank onboarding, AML, identity-authenticity or account-approval system. Clean cases can complete the automated preliminary checks without routine human intervention; mismatches and incomplete evidence are routed for review. Final bank approval remains outside scope. Never use real customer KYC documents in this demo.
 
 ## Business capabilities
 
@@ -51,7 +51,7 @@ Swagger: `http://localhost:8000/docs`
 | GET | `/health` | Health check |
 | POST | `/applications` | Create applicant application |
 | GET | `/applications/{id}` | Application and latest assessment |
-| PATCH | `/applications/{id}` | Update applicant name/address |
+| PATCH | `/applications/{id}` | Update applicant name/address/DOB and automatically re-run checks when documents exist |
 | POST | `/applications/{id}/documents` | Register submitted document text |
 | POST | `/applications/{id}/documents/upload` | Upload text-readable PDF/DOCX/TXT/MD applicant document |
 | GET | `/applications/{id}/documents` | List document inventory (without document text) |
@@ -93,7 +93,7 @@ Service URLs: API/Swagger `:8000/docs`, Prometheus `:9090`, Grafana `:3000` (`ad
 
 ### 1. Create application
 ```powershell
-$body = @{ applicant_id="demo-001"; full_name="Asha Rao"; email="asha@example.test"; application_address="12 Sample Road, Hyderabad, Telangana, 500001" } | ConvertTo-Json
+$body = @{ applicant_id="demo-001"; full_name="Asha Rao"; date_of_birth="1990-06-15"; email="asha@example.test"; application_address="12 Sample Road, Hyderabad, Telangana, 500001" } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://localhost:8000/applications" -Method Post -ContentType "application/json" -Body $body
 ```
 
@@ -103,7 +103,7 @@ $body = @{ document_type="passport"; vendor_version="ocr-v1"; source_filename="s
 Invoke-RestMethod -Uri "http://localhost:8000/applications/demo-001/documents" -Method Post -ContentType "application/json" -Body $body
 ```
 
-### 3. Submit proof of address (optional)
+### 3. Submit proof of address
 ```powershell
 $body = @{ document_type="proof_of_address"; vendor_version="ocr-v1"; document_text="Name: Asha Rao`nAddress: 12 Sample Road, Hyderabad, Telangana, 500001`nStatement Date: 2026-10-01" } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://localhost:8000/applications/demo-001/documents" -Method Post -ContentType "application/json" -Body $body
@@ -147,15 +147,25 @@ Place synthetic policy/reference files in `documents/` (`pdf`, `docx`, `html`, `
 
 Defaults: 1,000-character chunks and 150-character overlap. Set `RAG_SCOPE_DISTANCE_THRESHOLD` (default `0.75`) to tune the retrieval scope gate using labelled in-scope and out-of-scope test queries. Search at `/knowledge/search?q=passport%20requirements&top_k=4`. The Docker named volume `chroma-data` is mounted at `/app/chroma_store`; it is not a normal host folder.
 
+## Automated KYC decision behaviour
+
+For every active document, `extract_document_fields` extracts labelled fields and checks required fields/expiry. The workflow compares extracted identity name and DOB with the applicant record, checks the name on address evidence when available, calls `verify_address` using only an explicit proof-of-address document (an address printed on an identity document is not sufficient), then calls `assign_risk_rating`. The result includes `identity_verification`, `address_verification`, `verification_issues`, `tool_results`, `tools_executed` and an automated preliminary decision. Each tool completion/failure is recorded as an audit event.
+
+- `PRELIMINARY_KYC_PASSED`: all configured pre-checks passed; no routine human intervention is needed for this synthetic demo.
+- `NEEDS_MORE_INFORMATION`: evidence or required applicant data is missing/incomplete.
+- `MANUAL_REVIEW`: identity/address mismatch or expired/invalid evidence needs exception handling.
+
+Changing applicant details or adding/replacing a document invalidates the previous assessment. The API re-runs checks on applicant-detail updates; the UI re-runs checks after replacement uploads. The new-application form clears after successful submission and prevents repeated clicks while processing.
+
 ## Important boundaries / known limitations
 
 - Applicant uploads support text-readable PDF, DOCX, TXT and Markdown. Scanned images and image-only PDFs require a separately approved OCR integration. The OpenAI adapter is text extraction, not OCR.
 - No document authenticity, sanctions, PEP, fraud or official identity-database verification is implemented.
-- Address comparison is normalized exact-string matching, not proof of identity or residency.
+- Address comparison ignores case, whitespace and punctuation but otherwise uses normalized exact-string matching; it is not proof of identity or residency.
 - Risk bands are transparent demo rules, not a validated bank risk model.
 - The duplicate guard blocks requests when a same-type document is `RECEIVED` or `VERIFIED`; a replacement request can be made after `NEEDS_REVIEW`.
 - SQLite, regex PII handling and audit storage are demo-only. Production needs encrypted managed storage, RBAC, immutable audit, retention controls, malware scanning, authentication, authorization, durable queues and an approved human-review process.
-- `READY_FOR_REVIEW` is not account approval. A trained reviewer and approved identity checks remain necessary.
+- `PRELIMINARY_KYC_PASSED` means the configured synthetic-data pre-checks passed without routine human intervention; it is not account approval. Production identity/authenticity checks and final bank approval remain separate.
 - OCR drift simulation deliberately corrupts labelled DOB output; it is not a live vendor integration.
 
 ## Tests
@@ -182,10 +192,10 @@ The web UI is served by the FastAPI application at **http://localhost:8000/**. T
 Type in Copilot chat: `Show me application IDs pending for KYC verification`. The agent reads the SQLite application database and returns IDs with no completed assessment or a review/needs-information status. Select an application and ask `Verify KYC for application APP-...` to run the preliminary checks.
 
 ### Scenario B — modify an existing application
-Examples: `Change name to Asha Rao for application APP-12345678` or `Update address to 12 Example Road for application APP-12345678`. For document changes, type `Replace passport document for application APP-12345678`; use the Modify Existing Application form to upload the replacement. Changes and uploads are recorded in the audit trail.
+Examples: `Change name to Asha Rao for application APP-12345678` or `Update address to 12 Example Road for application APP-12345678`. Applicant detail changes automatically re-run the checks against active documents. For document changes, type `Replace passport document for application APP-12345678`; use the Modify Existing Application form to upload the replacement. Changes and uploads are recorded in the audit trail.
 
 ### Scenario C — start a fresh account application
-Type: `I want to open a new account`. The Copilot opens the New Application form. Enter name, email and address, select an identity-document type and upload a text-readable synthetic identity document plus optional proof of address. The UI creates an application ID, registers documents and runs preliminary KYC processing. The result is shown in the UI and saved to the application record.
+Type: `I want to open a new account`. The Copilot opens the New Application form. Enter name, email and address, select an identity-document type and upload a text-readable synthetic identity document plus proof of address. Date of birth and declared residential address are captured for matching. The UI creates a unique application ID, registers the identity and address documents, and runs all three tools automatically. The result includes name/DOB/address matches, document expiry/completeness, risk band and reason codes. The form resets after successful processing. Applicant changes and document replacements invalidate the old result and trigger re-verification.
 
 ### Upload KYC guidelines
 Open **KYC guidelines**, upload approved policy/reference documentation and select **Upload & index in ChromaDB**. The API stores the file in `documents/`, rebuilds the policy collection and reports the number of indexed chunks. Set `OPENAI_API_KEY` in `.env` for OpenAI embeddings. If re-indexing fails, the uploaded file remains on disk but the knowledge collection may need to be rebuilt after fixing the configuration.
