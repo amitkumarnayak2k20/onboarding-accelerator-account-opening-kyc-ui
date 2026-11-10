@@ -1,8 +1,9 @@
 import os, re, shutil
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from prometheus_client import make_asgi_app
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from .config import settings
 from .schemas import ApplicationCreate, ProcessRequest, EvaluationRequest, DocumentSubmission, DocumentRequestCreate
 from .audit.store import (create_application,get_application,get_events,add_event,add_document,get_documents,
@@ -20,7 +21,14 @@ from .schemas import DocumentSubmission
 init_tracing()
 app=FastAPI(title="Onboarding Accelerator — Account-Opening & KYC Agent",version=settings.app_version,
     description="Copilot-style account-opening and KYC training application. Synthetic data only; human review required.")
-app.mount("/metrics",make_asgi_app())
+@app.get("/metrics", include_in_schema=False)
+def metrics_endpoint():
+    """Expose Prometheus metrics from the default prometheus_client registry."""
+    return Response(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
 
 @app.get("/health")
 def health(): return {"status":"ok","service":settings.app_name,"version":settings.app_version}

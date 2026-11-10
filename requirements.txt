@@ -17,3 +17,4 @@ beautifulsoup4>=4.12,<5
 python-dotenv>=1.0,<2
 
 python-multipart>=0.0.9,<1
+prometheus-fastapi-instrumentator==7.1.0
